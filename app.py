@@ -111,7 +111,6 @@ def load_and_train():
     kf        = KFold(n_splits=5, shuffle=True, random_state=42)
     kf_scores = cross_val_score(pipeline, X, y, cv=kf, scoring='roc_auc')
 
-    # Build test loan table with predictions
     test_idx = X_test.index
     test_df  = df.loc[test_idx].copy()
     test_df['risk_score'] = (y_prob * 100).round(1)
@@ -150,10 +149,10 @@ def score_application(inputs, model, scaler, feature_names, numeric_features, ca
 
 def render_loan_table(data, category):
     color_map = {
-        'TP': ('#34d399', '#064e3b', '✓ Correctly caught fraud',      'Model said FRAUD → Actually FRAUD'),
-        'FP': ('#fbbf24', '#78350f', '✗ False alarm — innocent',      'Model said FRAUD → Actually CLEAN'),
-        'FN': ('#f87171', '#7f1d1d', '✗ Missed fraud — slipped thru', 'Model said CLEAN → Actually FRAUD'),
-        'TN': ('#60a5fa', '#1e3a5f', '✓ Correctly approved clean',    'Model said CLEAN → Actually CLEAN'),
+        'TP': ('#34d399', '#064e3b', 'Correctly caught fraud',      'Model said FRAUD → Actually FRAUD'),
+        'FP': ('#fbbf24', '#78350f', 'False alarm — innocent',      'Model said FRAUD → Actually CLEAN'),
+        'FN': ('#f87171', '#7f1d1d', 'Missed fraud — slipped thru', 'Model said CLEAN → Actually FRAUD'),
+        'TN': ('#60a5fa', '#1e3a5f', 'Correctly approved clean',    'Model said CLEAN → Actually CLEAN'),
     }
     color, bg, short, long = color_map[category]
 
@@ -164,8 +163,6 @@ def render_loan_table(data, category):
         <div style="font-size:0.8rem;color:{color};opacity:0.8;margin-top:3px">{long}</div>
     </div>""", unsafe_allow_html=True)
 
-    # ── All 79 original columns + our 4 engineered + prediction columns ──
-    # Put the most important columns first so they're visible without scrolling
     priority_cols = [
         'risk_score', 'category', 'Fraud_Type', 'Anomaly_Notes',
         'Application_ID', 'Application_Date', 'Borrower_Name',
@@ -189,7 +186,6 @@ def render_loan_table(data, category):
         'CERSAI_Checked', 'RERA_Registered', 'Title_Chain_Clear', 'EC_Years_Verified',
         'Broker_Involved', 'Broker_DSA_Name',
         'doc_risk_score',
-        # All fraud flag columns
         'Email_Name_Mismatch', 'Signature_Mismatch', 'ID_Docs_Altered',
         'Salary_Round_Figure_Flag', 'PF_Deduction_Missing',
         'Salary_Credited_From_Personal_Acct', 'ITR_Filed_Just_Before_Application',
@@ -200,15 +196,12 @@ def render_loan_table(data, category):
         'Fraud_Label_01',
     ]
 
-    # Keep only columns that actually exist in the data
     show_cols = [c for c in priority_cols if c in data.columns]
-    # Add any remaining columns not already listed
     remaining = [c for c in data.columns if c not in show_cols and c not in ['predicted','actual']]
     show_cols = show_cols + remaining
 
     display = data[show_cols].copy().reset_index(drop=True)
 
-    # Format money columns nicely
     money_cols = ['Monthly_Income_Stated','Actual_Bank_Credit_Monthly','Annual_Income_Stated',
                   'ITR_Income_Last_FY','ITR_Income_Prev_FY','Loan_Amount_INR','Market_Value_INR',
                   'Down_Payment_INR','EMI_INR','Existing_Monthly_EMI','Co_Applicant_Annual_Income',
@@ -231,7 +224,6 @@ def render_loan_table(data, category):
     st.caption(f"{len(display):,} loan applications · {total_cols} columns — scroll right to see all columns")
 
 
-# ── MAIN ────────────────────────────────────────────────
 def main():
     (model, scaler, feature_names, auc, prec, rec,
      tn, fp, fn, tp, coef_df, kf_scores, df, doc_flag_cols,
@@ -251,9 +243,6 @@ def main():
         "Inspect Predictions"
     ])
 
-    # ══════════════════════════════════════════
-    # TAB 1 — MODEL PERFORMANCE
-    # ══════════════════════════════════════════
     with tab1:
         st.markdown("### Model Metrics")
         c1, c2, c3 = st.columns(3)
@@ -286,23 +275,23 @@ def main():
                 st.markdown(f"""<div class="metric-card" style="border-color:#064e3b">
                     <div class="label" style="color:#34d399">True Negative</div>
                     <div class="value" style="color:#34d399">{tn:,}</div>
-                    <div class="meaning">Clean loans correctly approved ✓</div>
+                    <div class="meaning">Clean loans correctly approved</div>
                 </div>""", unsafe_allow_html=True)
                 st.markdown(f"""<div class="metric-card" style="border-color:#7f1d1d;margin-top:10px">
                     <div class="label" style="color:#f87171">False Negative</div>
                     <div class="value" style="color:#f87171">{fn:,}</div>
-                    <div class="meaning">Fraudsters who slipped through ✗</div>
+                    <div class="meaning">Fraudsters who slipped through</div>
                 </div>""", unsafe_allow_html=True)
             with cb:
                 st.markdown(f"""<div class="metric-card" style="border-color:#78350f">
                     <div class="label" style="color:#fbbf24">False Positive</div>
                     <div class="value" style="color:#fbbf24">{fp:,}</div>
-                    <div class="meaning">Innocent borrowers wrongly flagged ✗</div>
+                    <div class="meaning">Innocent borrowers wrongly flagged</div>
                 </div>""", unsafe_allow_html=True)
                 st.markdown(f"""<div class="metric-card" style="border-color:#064e3b;margin-top:10px">
                     <div class="label" style="color:#34d399">True Positive</div>
                     <div class="value" style="color:#34d399">{tp:,}</div>
-                    <div class="meaning">Fraudsters correctly caught ✓</div>
+                    <div class="meaning">Fraudsters correctly caught</div>
                 </div>""", unsafe_allow_html=True)
 
         with col_right:
@@ -334,9 +323,6 @@ def main():
                 </div>
             </div>""", unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════
-    # TAB 2 — SCORE NEW APPLICATION
-    # ══════════════════════════════════════════
     with tab2:
         st.markdown("### Score a New Loan Application")
         st.markdown('<p style="color:#8899aa;font-size:0.9rem">Fill in the loan details below. The model will return a fraud risk score in real time.</p>', unsafe_allow_html=True)
@@ -453,9 +439,6 @@ def main():
                 <div class="value" style="color:{col}">{cibil}</div>
                 <div class="meaning">Credit score — higher is better (300–900)</div></div>""", unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════
-    # TAB 3 — FEATURE IMPORTANCE
-    # ══════════════════════════════════════════
     with tab3:
         st.markdown("### Feature Importance — What Drives the Model's Decisions")
         st.markdown('<p style="color:#8899aa;font-size:0.9rem">Positive weight = pushes toward fraud. Negative weight = pushes toward clean. Larger absolute value = more influential.</p>', unsafe_allow_html=True)
@@ -496,18 +479,14 @@ def main():
         <div style="background:#1e3a5f;border:1px solid #1d4ed8;border-radius:12px;padding:1.25rem 1.5rem;margin-top:1rem">
             <div style="font-size:0.7rem;font-weight:600;color:#60a5fa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem">KEY INSIGHT</div>
             <p style="color:#cbd5e1;font-size:0.9rem;margin:0;line-height:1.7">
-                <strong style="color:#f0f4f8">income_inflate_ratio</strong> — a feature created from scratch by dividing stated income by actual bank credits — is the single strongest fraud predictor with a weight of <strong style="color:#60a5fa">+1.93</strong>. Any borrower claiming more than 1.5× their actual bank credits should trigger immediate manual review.
+                <strong style="color:#f0f4f8">income_inflate_ratio</strong> — a feature created from scratch by dividing stated income by actual bank credits — is the single strongest fraud predictor with a weight of <strong style="color:#60a5fa">+1.93</strong>. Any borrower claiming more than 1.5x their actual bank credits should trigger immediate manual review.
             </p>
         </div>""", unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════
-    # TAB 4 — INSPECT PREDICTIONS
-    # ══════════════════════════════════════════
     with tab4:
         st.markdown("### Inspect Actual Loan Applications")
         st.markdown('<p style="color:#8899aa;font-size:0.9rem">Click any category to see the real loan applications behind each prediction type. Every row is a real loan from the 20-year dataset.</p>', unsafe_allow_html=True)
 
-        # Big clickable boxes
         st.markdown("#### Select a category to inspect")
         b1, b2, b3, b4 = st.columns(4)
 
@@ -521,7 +500,7 @@ def main():
             <div style="background:#064e3b;border:2px solid #34d399;border-radius:12px;padding:1rem;text-align:center;margin-bottom:10px">
                 <div style="font-size:2rem;font-weight:700;color:#34d399">{tp:,}</div>
                 <div style="font-size:0.85rem;font-weight:600;color:#34d399">True Positive</div>
-                <div style="font-size:0.72rem;color:#6ee7b7;margin-top:4px">Fraud correctly caught ✓</div>
+                <div style="font-size:0.72rem;color:#6ee7b7;margin-top:4px">Fraud correctly caught</div>
             </div>""", unsafe_allow_html=True)
             if st.button("View TP loans", key="btn_tp"):
                 st.session_state['selected'] = 'TP'
@@ -531,7 +510,7 @@ def main():
             <div style="background:#78350f;border:2px solid #fbbf24;border-radius:12px;padding:1rem;text-align:center;margin-bottom:10px">
                 <div style="font-size:2rem;font-weight:700;color:#fbbf24">{fp:,}</div>
                 <div style="font-size:0.85rem;font-weight:600;color:#fbbf24">False Positive</div>
-                <div style="font-size:0.72rem;color:#fde68a;margin-top:4px">Innocent flagged ✗</div>
+                <div style="font-size:0.72rem;color:#fde68a;margin-top:4px">Innocent flagged</div>
             </div>""", unsafe_allow_html=True)
             if st.button("View FP loans", key="btn_fp"):
                 st.session_state['selected'] = 'FP'
@@ -541,7 +520,7 @@ def main():
             <div style="background:#7f1d1d;border:2px solid #f87171;border-radius:12px;padding:1rem;text-align:center;margin-bottom:10px">
                 <div style="font-size:2rem;font-weight:700;color:#f87171">{fn:,}</div>
                 <div style="font-size:0.85rem;font-weight:600;color:#f87171">False Negative</div>
-                <div style="font-size:0.72rem;color:#fca5a5;margin-top:4px">Fraud missed ✗</div>
+                <div style="font-size:0.72rem;color:#fca5a5;margin-top:4px">Fraud missed</div>
             </div>""", unsafe_allow_html=True)
             if st.button("View FN loans", key="btn_fn"):
                 st.session_state['selected'] = 'FN'
@@ -551,19 +530,17 @@ def main():
             <div style="background:#1e3a5f;border:2px solid #60a5fa;border-radius:12px;padding:1rem;text-align:center;margin-bottom:10px">
                 <div style="font-size:2rem;font-weight:700;color:#60a5fa">{tn:,}</div>
                 <div style="font-size:0.85rem;font-weight:600;color:#60a5fa">True Negative</div>
-                <div style="font-size:0.72rem;color:#93c5fd;margin-top:4px">Clean correctly approved ✓</div>
+                <div style="font-size:0.72rem;color:#93c5fd;margin-top:4px">Clean correctly approved</div>
             </div>""", unsafe_allow_html=True)
             if st.button("View TN loans", key="btn_tn"):
                 st.session_state['selected'] = 'TN'
 
-        # Show selected table
         selected = st.session_state.get('selected', None)
         if selected:
             st.markdown("---")
             data_map = {'TP': tp_data, 'FP': fp_data, 'FN': fn_data, 'TN': tn_data}
             render_loan_table(data_map[selected], selected)
 
-            # Download button — all columns
             csv = data_map[selected].drop(columns=['predicted','actual'], errors='ignore').to_csv(index=False)
             st.download_button(
                 label=f"Download {selected} loans as CSV",
@@ -575,7 +552,6 @@ def main():
             st.markdown("""
             <div style="background:#1a1f2e;border:1px dashed #2d3748;border-radius:12px;
                         padding:2rem;text-align:center;margin-top:1rem">
-                <div style="font-size:2rem;margin-bottom:8px"></div>
                 <div style="color:#8899aa;font-size:0.9rem">Click any button above to see the actual loan applications</div>
             </div>""", unsafe_allow_html=True)
 
