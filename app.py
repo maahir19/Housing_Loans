@@ -9,9 +9,6 @@ from sklearn.metrics import roc_auc_score, precision_score, recall_score, confus
 import shap
 import requests
 import json
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')
 import warnings
 warnings.filterwarnings('ignore')
 
