@@ -7,9 +7,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, confusion_matrix
 import shap
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')
 import warnings
 warnings.filterwarnings('ignore')
 
