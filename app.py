@@ -443,102 +443,116 @@ def main():
             # EMI as % of actual income
             emi_to_income = estimated_emi / actual_credit_safe
 
-            credit_violations = []
-            if age < 21:
-                credit_violations.append(f"The borrower is {age} years old. Bank policy requires the primary applicant on a housing loan to be at least 21, since they need an independent income and credit history to qualify.")
-            if years_employer > max(age - 18, 0):
-                credit_violations.append(f"The borrower is {age} years old but reports {years_employer} years with their current employer. That would mean they started this job at age {age - years_employer}, which is not realistic and should be verified before proceeding.")
-            if foir > 0.65:
-                credit_violations.append(f"This borrower already spends more than 65% of their income paying off other loans (FOIR is {foir:.2f}). That is too high for bank policy.")
-            if effective_foir > 0.65:
-                credit_violations.append(f"If this loan is approved, the new EMI of about Rs{estimated_emi:,.0f}/mo plus the existing EMI of Rs{emi:,}/mo would use up {effective_foir*100:.0f}% of the borrower's actual monthly income of Rs{actual_credit:,}/mo. Banks usually cap this at 65%.")
-            if emi_to_income > 0.55:
-                credit_violations.append(f"The estimated monthly payment of Rs{estimated_emi:,.0f} would take up {emi_to_income*100:.0f}% of the borrower's real monthly income (Rs{actual_credit:,}/mo). That is too much to comfortably afford. Note the income they claimed, Rs{stated_income:,}/mo, could not be verified.")
-            if ltv > 0.90:
-                credit_violations.append(f"The loan would cover {ltv*100:.0f}% of the property's value, meaning the borrower is putting in less than 10% of their own money.")
-            if (age + tenure) > 65:
-                credit_violations.append(f"The borrower would be {age+tenure} years old by the time this {tenure} year loan is fully repaid, which is past normal retirement age.")
-            if tenure < 5 and loan_amount > 2000000:
-                credit_violations.append(f"A {tenure} year repayment period is too short for a loan of Rs{loan_amount:,}. It would need a monthly payment of about Rs{estimated_emi:,.0f}, which is not realistic.")
-            if cibil < 650:
-                credit_violations.append(f"The borrower's credit score (CIBIL) is {cibil}, which is below the minimum of 650 the bank normally requires.")
+            # ── Unified risk score ─────────────────────────────────────────
+            # Every signal below (fraud-model probability, credit policy
+            # thresholds, document/process flags) is converted into a smooth
+            # 0-1 "risk contribution" instead of a hard pass/fail cutoff, then
+            # combined into ONE overall score with a noisy-OR:
+            #     overall = 1 - product(1 - r_i)
+            # so the score moves whenever ANY input changes, and one severe
+            # issue alone can dominate the score even if everything else is clean.
 
-            # ── Anomaly checks: values that are not policy violations and that the
-            # trained model may not flag (it only reacts to patterns in past fraud
-            # cases), but that look unusual enough for a human to want a second look.
+            inflate = min(stated_income / actual_credit if actual_credit else 1, 10)
+
+            def sigmoid_risk(value, threshold, scale, increasing=True):
+                z = (value - threshold) / scale
+                return 1 / (1 + np.exp(-z if increasing else z))
+
+            risk_components = []  # (label, risk_value, plain-English message)
+
+            cibil_r = sigmoid_risk(cibil, 590, 40, increasing=False)
+            risk_components.append(("CIBIL score", cibil_r,
+                f"CIBIL is {cibil}, {'well below' if cibil < 650 else 'above'} the 650 the bank treats as a safe minimum."))
+
+            foir_r = sigmoid_risk(foir, 0.77, 0.08, increasing=True)
+            risk_components.append(("Existing FOIR", foir_r,
+                f"Existing debt already uses {foir*100:.0f}% of income (FOIR), against a 65% policy cap."))
+
+            eff_foir_r = sigmoid_risk(effective_foir, 0.77, 0.08, increasing=True)
+            risk_components.append(("FOIR after this loan", eff_foir_r,
+                f"With this loan added, total obligations would use {effective_foir*100:.0f}% of actual monthly income."))
+
+            emi_inc_r = sigmoid_risk(emi_to_income, 0.655, 0.07, increasing=True)
+            risk_components.append(("EMI affordability", emi_inc_r,
+                f"The new EMI alone would take {emi_to_income*100:.0f}% of the borrower's actual monthly income."))
+
+            ltv_r = sigmoid_risk(ltv, 0.975, 0.05, increasing=True)
+            risk_components.append(("Loan-to-value", ltv_r,
+                f"The loan covers {ltv*100:.0f}% of the property's value, leaving little borrower equity."))
+
+            age_tenure_r = sigmoid_risk(age + tenure, 72.5, 5, increasing=True)
+            risk_components.append(("Age at loan end", age_tenure_r,
+                f"The borrower would be {age + tenure} when this loan is fully repaid."))
+
+            emp_years_r = sigmoid_risk(years_employer - max(age - 18, 0), 3, 2, increasing=True)
+            risk_components.append(("Employment history", emp_years_r,
+                f"{years_employer} years with the current employer doesn't fit a {age}-year-old's timeline."))
+
+            age_min_r = sigmoid_risk(age, 19.2, 1.2, increasing=False)
+            risk_components.append(("Applicant age", age_min_r,
+                f"The borrower is {age}, below the usual minimum independent-applicant age of 21."))
+
+            inflate_r = min(sigmoid_risk(inflate, 1.5, 0.15, increasing=True), 0.55)
+            risk_components.append(("Income consistency", inflate_r,
+                f"Stated income is {inflate:.2f}x actual bank credits, higher than expected."))
+
+            credit_risk = 1.0
+            for _, r, _ in risk_components:
+                credit_risk *= (1 - r)
+            credit_risk = 1 - credit_risk
+
+            n_critical = critical_flags_triggered
+            n_minor     = max(flags_count_excl_oc - n_critical, 0)
+            critical_doc_risk = 1 - (1 - 0.92) ** n_critical
+            minor_doc_risk    = 1 - (1 - 0.18) ** n_minor
+
+            overall_risk = 1 - (1 - score) * (1 - credit_risk) * (1 - critical_doc_risk) * (1 - minor_doc_risk)
+            overall_risk = min(max(overall_risk, 0.0), 1.0)
+
+            if overall_risk >= 0.70:
+                color, bg, label = "#f87171", "#1c0a0a", "HIGH RISK - DO NOT PROCEED"
+            elif overall_risk >= 0.40:
+                color, bg, label = "#fbbf24", "#1c1100", "MODERATE RISK - MANUAL REVIEW"
+            else:
+                color, bg, label = "#34d399", "#021c0e", "LOW RISK - PROCEED"
+
+            named = [("Fraud model signal", score,
+                "The fraud model itself sees an unusual pattern in the documents or income data." if score >= 0.4
+                else "The fraud model sees nothing unusual in the documents or income data.")]
+            if n_critical > 0:
+                named.append(("Critical document flags", critical_doc_risk,
+                    f"{n_critical} serious document red flag(s) were raised (tampering, AML, signature mismatch, etc.)."))
+            if n_minor > 0:
+                named.append(("Minor flags", minor_doc_risk,
+                    f"{n_minor} smaller suspicious flag(s) were raised."))
+            named.extend(risk_components)
+
+            top_reasons = sorted(named, key=lambda x: x[1], reverse=True)[:3]
+            reasoning_lines = [msg for _, val, msg in top_reasons if val > 0.15]
+            if not reasoning_lines:
+                reasoning_lines = ["No significant risk factors were found across the fraud model, credit policy, or documentation checks."]
+
+            # ── Anomaly checks: not scored, just worth a human glance ─────────────
             anomaly_notes = []
             if 0 < ltv < 0.30:
-                anomaly_notes.append(f"LTV is unusually low at {ltv:.2f}. This borrower would be paying about {(1-ltv)*100:.0f}% of the property's value out of their own pocket. Most home loan borrowers finance 60% to 90% of the value through the loan. Large self-funded down payments are also a known channel for money laundering, since the bank verifies the loan portion but often not where the rest of the purchase price came from. Ask for source-of-funds proof on that amount before proceeding.")
+                anomaly_notes.append(f"LTV is unusually low at {ltv:.2f}. This borrower would self-fund about {(1-ltv)*100:.0f}% of the property's value. Large self-funded down payments are a known channel for money laundering since the bank verifies the loan portion but often not the rest. Ask for source-of-funds proof.")
             if foir < 0.05:
-                anomaly_notes.append(f"FOIR is unusually low at {foir:.2f}, meaning this borrower reports almost no existing debt obligations relative to income. Not a problem on its own, but worth a second look alongside other unusual numbers here.")
+                anomaly_notes.append(f"FOIR is unusually low at {foir:.2f}, meaning almost no existing debt relative to income. Not a problem alone, but worth a second look alongside other numbers here.")
 
-            r1, r2, r3 = st.columns([1,2,1])
+            r1, r2, r3 = st.columns([1, 3, 1])
             with r2:
-                # Model score label
-                if score >= 0.7:
-                    score_color = "#f87171"
-                    score_label = "High probability of fraud"
-                elif score >= 0.4:
-                    score_color = "#fbbf24"
-                    score_label = "Moderate probability of fraud"
-                else:
-                    score_color = "#34d399"
-                    score_label = "Low probability of fraud"
-
-                # Final verdict - fraud flags and credit rules both contribute
-                if score >= 0.7 or critical_flags_triggered >= 1:
-                    color, bg, label = "#f87171", "#1c0a0a", "FLAG IMMEDIATELY"
-                    if critical_flags_triggered >= 1 and score < 0.7:
-                        action = "A serious document issue was found. This application should go straight to the fraud investigation team."
-                    else:
-                        action = "The model sees a high chance of fraud here. This application should go to the fraud investigation team."
-                elif credit_violations:
-                    color, bg, label = "#f87171", "#1c0a0a", "REJECTED - DOES NOT MEET LOAN POLICY"
-                    if len(credit_violations) > 1:
-                        action = f"{len(credit_violations)} loan policy issues were found. See details below."
-                    else:
-                        action = credit_violations[0]
-                elif score >= 0.4 or flags_count_excl_oc >= 1 or anomaly_notes:
-                    color, bg, label = "#fbbf24", "#1c1100", "MANUAL REVIEW REQUIRED"
-                    if flags_count_excl_oc >= 1 and score < 0.4:
-                        action = f"{flags_count_excl_oc} suspicious flag(s) were raised. This needs a manual check before it can be approved."
-                    elif score < 0.4 and not flags_count_excl_oc and anomaly_notes:
-                        action = "An unusual pattern was flagged for review. See details below."
-                    else:
-                        action = "There is a moderate chance of fraud here. Please verify the documents before going ahead."
-                else:
-                    color, bg, label = "#34d399", "#021c0e", "PROCEED TO CREDIT APPRAISAL"
-                    action = "No red flags were raised and the fraud score is low. It looks safe to move ahead with the usual checks."
-
+                reasoning_html = "".join(f'<div style="font-size:1rem;color:#cbd5e1;line-height:1.6;margin-top:8px">{l}</div>' for l in reasoning_lines)
                 st.markdown(f'''
-                <div style="background:{bg};border:1px solid {color}44;border-radius:16px;padding:1.75rem 2rem;margin:1rem 0">
-                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1.5rem;flex-wrap:wrap">
-                    <div style="text-align:center;flex:1;min-width:140px">
-                      <div style="font-size:0.7rem;font-weight:600;color:#8899aa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px">MODEL SCORE</div>
-                      <div style="font-size:3rem;font-weight:700;color:{score_color};line-height:1">{score*100:.1f}%</div>
-                      <div style="font-size:0.95rem;color:{score_color};margin-top:4px;opacity:0.9">{score_label}</div>
-                    </div>
-                    <div style="width:1px;background:{color}33;align-self:stretch;min-height:70px"></div>
-                    <div style="text-align:center;flex:1.4;min-width:160px">
-                      <div style="font-size:0.7rem;font-weight:600;color:#8899aa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px">DECISION</div>
-                      <div style="font-size:1.25rem;font-weight:700;color:{color};line-height:1.3">{label}</div>
-                      <div style="font-size:1.05rem;color:#cbd5e1;margin-top:10px;line-height:1.6">{action}</div>
-                    </div>
-                  </div>
+                <div style="background:{bg};border:1px solid {color}44;border-radius:16px;padding:1.75rem 2rem;margin:1rem 0;text-align:center">
+                  <div style="font-size:0.7rem;font-weight:600;color:#8899aa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px">OVERALL RISK SCORE</div>
+                  <div style="font-size:3rem;font-weight:700;color:{color};line-height:1">{overall_risk*100:.1f}%</div>
+                  <div style="font-size:1.25rem;font-weight:700;color:{color};margin-top:8px">{label}</div>
+                  <div style="margin-top:14px;text-align:left;max-width:520px;margin-left:auto;margin-right:auto">{reasoning_html}</div>
                 </div>''', unsafe_allow_html=True)
 
-                # Show all credit violations as a separate block if any exist
-                if credit_violations:
-                    violations_html = "".join([f'<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:10px"><span style="color:#f87171;font-size:0.9rem;margin-top:1px">✕</span><span style="font-size:1rem;color:#fca5a5;line-height:1.5">{v}</span></div>' for v in credit_violations])
-                    st.markdown(f'<div style="background:#1c0a0a;border:1px solid #f8717144;border-radius:12px;padding:1rem 1.25rem;margin-top:0.5rem"><div style="font-size:0.72rem;font-weight:600;color:#f87171;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px">LOAN POLICY ISSUES FOUND ({len(credit_violations)})</div>{violations_html}</div>', unsafe_allow_html=True)
-
-                # Show anomaly notes separately. These are not policy breaches and the
-                # fraud model itself may not pick them up, since it only reacts to
-                # patterns it has seen before. They're surfaced here so a human still
-                # gets a chance to ask about anything unusual.
                 if anomaly_notes:
-                    anomaly_html = "".join([f'<div style="margin-bottom:10px"><span style="font-size:1rem;color:#fde68a;line-height:1.5">{a}</span></div>' for a in anomaly_notes])
-                    st.markdown(f'<div style="background:#1c1100;border:1px solid #fbbf2444;border-radius:12px;padding:1rem 1.25rem;margin-top:0.5rem"><div style="font-size:0.72rem;font-weight:600;color:#fbbf24;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px">RISK NOTE</div>{anomaly_html}</div>', unsafe_allow_html=True)
+                    anomaly_html = "".join([f'<div style="margin-bottom:8px"><span style="font-size:0.92rem;color:#fde68a;line-height:1.5">{a}</span></div>' for a in anomaly_notes])
+                    st.markdown(f'<div style="background:#1c1100;border:1px solid #fbbf2444;border-radius:12px;padding:0.85rem 1.1rem;margin-top:0.5rem"><div style="font-size:0.68rem;font-weight:600;color:#fbbf24;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px">WORTH A SECOND LOOK (not scored)</div>{anomaly_html}</div>', unsafe_allow_html=True)
 
             inflate     = min(stated_income/actual_credit if actual_credit else 1, 10)
             flags_count = sum([bank_tampered,pdf_anomaly,aml_flag,pep,disb_nonseller,sig_mismatch,id_altered,itr_before,overseas,month_end_park,val_inflation,salary_personal,pf_missing,unreachable,foreclosed,round_salary,email_mismatch,oc_cc])
@@ -560,7 +574,7 @@ def main():
                 st.markdown(f'<div class="metric-card"><div class="label">Est. EMI / Income</div><div class="value" style="color:{col}">{emi_to_income*100:.0f}%</div><div class="meaning">Rs{estimated_emi:,.0f}/mo EMI on Rs{actual_credit:,}/mo actual income</div></div>', unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown('<div style="font-size:0.7rem;font-weight:600;color:#8899aa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.75rem">WHY THIS SCORE? - FACTOR BREAKDOWN</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-size:0.7rem;font-weight:600;color:#8899aa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.75rem">FRAUD MODEL DETAIL - WHAT DROVE ITS PROBABILITY</div>', unsafe_allow_html=True)
 
             try:
                 if use_tree_shap:
